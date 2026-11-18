@@ -92,6 +92,67 @@ function element() {
   return view;
 }
 const flatten = node => typeof node==="object" ? [node,...node.content.flatMap(flatten)] : [node];
+
+test("Changes restores each folder and machine immediately and ignores superseded reads", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: 50000 });
+  let folder = "/repo", machine = null, filename = "local.txt", reads = 0, pending, hold;
+  const host = {
+    spaces: () => [{ active: true, folder, machine }], panes: () => [], focused: () => null,
+    theme: () => ({}), window: () => ({ platform: "linux" }),
+    exec: async (_cmd, args, { cwd }) => {
+      if (args.includes("--show-toplevel")) { reads++; return { code: 0, stdout: cwd }; }
+      if (args.includes("status")) {
+        const name = filename;
+        if (hold) { const gate = hold; hold = null; await gate.promise; }
+        return { code: 0, stdout: "?? " + name + "\0" };
+      }
+      return { code: 1, stdout: "" };
+    }
+  };
+  const cx = { notify() {}, timer: { every() {} }, spawn(fn) { pending = fn(cx); } };
+  const Changes = await filesModel("orca-changes", host), panel = new Changes();
+  panel.watch = () => {};
+  const labels = () => flatten(panel.render(cx)).filter(node => typeof node === "string");
+  panel.init(null, cx);
+  await pending;
+  panel.toggle("group-Staged", cx);
+  machine = "remote";
+  filename = "remote.txt";
+  assert.ok(labels().includes("Loading changes…"));
+  await pending;
+  assert.ok(labels().includes("remote.txt"));
+  assert.ok(!panel.folds.has("group-Staged"));
+  machine = null;
+  assert.ok(labels().includes("local.txt"));
+  assert.ok(panel.folds.has("group-Staged"));
+  assert.equal(reads, 2);
+
+  folder = "/another";
+  labels();
+  await pending;
+  t.mock.timers.tick(10001);
+  folder = "/repo";
+  filename = "superseded.txt";
+  const gate = hold = Promise.withResolvers();
+  assert.ok(labels().includes("local.txt"));
+  const superseded = pending;
+  await new Promise(resolve => setImmediate(resolve));
+  folder = "/another";
+  labels();
+  folder = "/repo";
+  filename = "latest.txt";
+  assert.ok(labels().includes("local.txt"));
+  await pending;
+  gate.resolve();
+  await superseded;
+  assert.ok(labels().includes("latest.txt"));
+  filename = "manual.txt";
+  panel.refresh(cx);
+  await pending;
+  assert.ok(labels().includes("manual.txt"));
+  assert.ok(!labels().includes("latest.txt"));
+});
+
 async function commandResult(cmd,args,options={}) {
   try {return {code:0,...await exec(cmd,args,{windowsHide:true,...options})};}
   catch(e){return {code:e.code,stdout:e.stdout || "",stderr:e.stderr || e.message};}
