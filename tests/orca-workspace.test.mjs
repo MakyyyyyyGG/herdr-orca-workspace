@@ -12,7 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { exitedAgent, endpoints, portLabel } from "../mods/orca-projects/activity.js";
 import { changeAgent, asleep } from "../mods/orca-agent-actions/lifecycle.js";
-import { sections, reviewFiles, recentCommits } from "../mods/orca-changes/review.js";
+import { sections, reviewFiles, committedFiles } from "../mods/orca-changes/review.js";
 import { pushInfo, pushBranch } from "../mods/orca-changes/push.js";
 import { browserHost, webAddress } from "../mods/orca-projects/web-port.js";
 import { normalize, key, locations, parseWorktrees, groupProjects } from "../mods/orca-projects/projects.js";
@@ -145,12 +145,12 @@ test("Real Git conflict, filename-only staged and unstaged groups, untracked fil
   await put("src/auth.ts","staged\n");await git(repo,"add","src/auth.ts");await put("src/auth.ts","unstaged\n");await put("new file.txt","fresh\n");await put("ignored.log","ignore\n");
   const status=(await git(repo,"status","--porcelain=v1","-z","--no-renames","--untracked-files=all")).split("\0").filter(Boolean);
   const files=reviewFiles(status);
-  assert.equal(new Set(files.map(f=>f.path)).size,3);assert.deepEqual([...new Set(files.map(f=>f.section))],sections);
-  assert.deepEqual(files.filter(f=>f.path==="src/auth.ts").map(f=>f.section),["Staged","Unstaged"]);
+  assert.equal(new Set(files.map(f=>f.path)).size,3);assert.ok(files.find(f=>f.path==="conflict.txt" && f.section==="Uncommitted" && f.conflict));
+  assert.deepEqual(files.filter(f=>f.path==="src/auth.ts").map(f=>f.section),["Uncommitted","Staged"]);
   const host={spaces:()=>[{active:true,folder:repo}],focused:()=>null,panes:()=>[],window:()=>({platform:"windows"}),
     exec:async (cmd,args,opt)=>{try{return{code:0,stdout:await run(cmd,args,{cwd:opt.cwd})}}catch(e){return{code:e.code,stderr:e.stderr}}},
     readTextFile:async f=>readFile(f,"utf8")};
-  const Changes=await filesModel("orca-changes",host),changes=new Changes();Object.assign(changes,{files,root:repo,on:null,committed:[],folds:new Set()});
+  const Changes=await filesModel("orca-changes",host),changes=new Changes();Object.assign(changes,{files,root:repo,on:null,folds:new Set()});
   const ctx=JSON.stringify({cwd:repo,on:null});
   const text=changes.fileRows({}).flatMap(flatten).filter(n=>typeof n==="string");
   assert.equal(text.filter(n=>n==="auth.ts").length,2);
@@ -208,40 +208,41 @@ test("Only validated HTTP and HTTPS rows offer a browser action, including after
   for(const port of [80,443,3000,8080]) await assert.rejects(webAddress({...raw,port},async()=>({code:1,stdout:"000"}),()=>true),/did not answer/);
 });
 
-test("Recent history, staged, and unstaged coexist in the panel and Push sends existing commits to a disposable bare remote",async()=>{
+test("Three status groups show only pending work and pushing clears committed files",async()=>{
   const root=await temp("push"), repo=path.join(root,"repo"), bare=path.join(root,"remote.git"), peer=path.join(root,"peer");
   await mkdir(repo);await git(repo,"init","-q","-b","main");
   const identity=async dir=>{await git(dir,"config","user.name","Fixture");await git(dir,"config","user.email","fixture@example.test");};
   await identity(repo);
   const read=a=>commandResult(gitExe,["-C",repo,...a]), put=s=>writeFile(path.join(repo,"file.txt"),s);
-  assert.deepEqual(await recentCommits(read),[]);assert.match((await pushInfo(read)).message,/first commit/);
+  assert.deepEqual(await committedFiles(read,await pushInfo(read)),[]);assert.match((await pushInfo(read)).message,/first commit/);
   await put("first\n");await git(repo,"add",".");await git(repo,"commit","-qm","First commit");
   assert.match((await pushInfo(read)).message,/remote/);
+  assert.deepEqual((await committedFiles(read,await pushInfo(read))).map(f=>f.path),["file.txt"]);
   await git(root,"init","--bare","-q","-b","main",bare);await git(repo,"remote","add","origin",bare);
   let state=await pushInfo(read);assert.ok(state.ready && state.track);assert.equal(await pushBranch(read,state),"Pushed to origin/main");
   assert.equal((await pushInfo(read)).ready,false);
+  await writeFile(path.join(repo,"earlier.txt"),"earlier outgoing commit");await git(repo,"add","earlier.txt");await git(repo,"commit","-qm","Earlier outgoing");
   await put("second\n");await git(repo,"commit","-qam","Second commit");
   await put("staged edit\n");await git(repo,"add","file.txt");await put("working edit\n");await writeFile(path.join(repo,"extra.txt"),"extra\n");
   const dirty=await git(repo,"status","--porcelain=v1","-z");const oid=(await git(repo,"rev-parse","HEAD")).trim();
-  state=await pushInfo(read);assert.equal(state.ahead,1);
+  state=await pushInfo(read);assert.equal(state.ahead,2);
   const host={spaces:()=>[{active:true,folder:repo}],panes:()=>[],focused:()=>null,window:()=>({platform:"windows"}),theme:()=>({}),settings:()=>({}),shared:()=>null,
     exec:(cmd,args,opts)=>commandResult(cmd,args,{cwd:opts.cwd}),readTextFile:f=>readFile(f,"utf8")};
   const Changes=await filesModel("orca-changes",host), panel=new Changes();
   let pending;const cx={notify(){},timer:{every(){}},spawn:fn=>{pending=fn(cx);}};panel.watch=()=>{};panel.init(null,cx);await pending;
   const labels=()=>flatten(panel.render(cx)).filter(n=>typeof n==="string");
-  for(const name of ["Committed","Staged","Unstaged","Push branch","Ahead of origin/main"])assert.ok(labels().includes(name),name);
-  assert.deepEqual(panel.committed.map(f=>f.path),["file.txt"]);
-  assert.ok(!flatten(panel.render(cx)).some(node=>node?.key==="changes-diff-x"));
-  assert.equal(panel.rows.length,0);
-  panel.switchMode("commits",cx);await pending;
-  for(const name of ["First commit","Second commit","Recent commits"])assert.ok(labels().includes(name),name);
-  for(const [subject,line] of [["First commit","first"],["Second commit","second"]]){
-    const c=panel.commits.find(c=>c.subject===subject);
-    if(panel.open!==c.id){panel.pick(c.id,cx);await pending;}
-    assert.ok(panel.rows.some(r=>r.kind==="+"&&r.text===line));assert.ok(!panel.rows.some(r=>r.text.includes("working edit")));
-  }
+  for(const name of [...sections,"Push branch"]) assert.ok(labels().includes(name),name);
+  for(const name of ["Recent commits","First commit","Second commit","Latest commit","Commits","Conflicts"]) assert.ok(!labels().includes(name),name);
+  const committed=()=>panel.files.filter(f=>f.section==="Committed").map(f=>f.path);
+  assert.deepEqual(committed(),["earlier.txt","file.txt"]);
+  assert.deepEqual((await committedFiles(read,{})).map(f=>f.path),["earlier.txt","file.txt"]);
+  const view = flatten(panel.render(cx));
+  assert.deepEqual(view.filter(n=>typeof n?.key==="string" && n.key.startsWith("group-")).map(n=>n.key),sections.map(s=>"group-"+s));
+  assert.ok(!view.some(n=>n?.key==="review-commits" || n?.key==="changes-diff-x"));
   assert.equal(await pushBranch(read,state),"Pushed to origin/main");assert.equal((await git(bare,"rev-parse","refs/heads/main")).trim(),oid);
   assert.equal((await git(repo,"rev-parse","HEAD")).trim(),oid);assert.equal(await git(repo,"status","--porcelain=v1","-z"),dirty);
+  panel.refresh(cx);await pending;assert.deepEqual(committed(),[]);assert.ok(labels().includes("Committed"));
+  assert.deepEqual(await committedFiles(read,{}),[]);
   await git(root,"clone","-q",bare,peer);await identity(peer);await git(peer,"commit","--allow-empty","-qm","Remote advanced");await git(peer,"push","-q");
   const remoteHead=(await git(bare,"rev-parse","main")).trim();
   await git(repo,"commit","--allow-empty","-qm","Local changes");state=await pushInfo(read);assert.ok(state.ready);
@@ -249,13 +250,7 @@ test("Recent history, staged, and unstaged coexist in the panel and Push sends e
   await assert.rejects(pushBranch(read,await pushInfo(read)),/rejected/);assert.equal((await git(bare,"rev-parse","main")).trim(),remoteHead);
   await git(repo,"fetch","-q");state=await pushInfo(read);assert.ok(state.behind>0&&!state.ready);
   await git(repo,"switch","-q","--detach");assert.match((await pushInfo(read)).message,/Switch to a branch/);
-  panel.refresh(cx);await pending;assert.ok(panel.commits.length);panel.switchMode("changes",cx);await pending;
-  assert.equal(panel.committed.length,0,"An empty HEAD contributes no files");assert.ok(labels().includes("Unstaged"));
-  const detached=await recentCommits(read);assert.equal(detached[0].subject,"New local commit");
-  const {committedFiles}=await import("../mods/orca-changes/review.js");
-  const first=detached.find(c=>c.subject==="First commit");
-  const initial=await committedFiles(read,{},first);assert.equal(initial.label,"Latest commit");
-  assert.deepEqual(initial.files.map(f=>[f.status,f.path]),[["A","file.txt"]]);
+  panel.refresh(cx);await pending;assert.deepEqual(committed(),["file.txt"]);assert.ok(labels().includes("Uncommitted"));
 });
 
 test("The inspector's GitHub menu links to the selected repository without forwarding credentials",async()=>{

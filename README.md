@@ -1,6 +1,6 @@
 # Orca Workspace for Herdr
 
-A Windows workspace for running coding agents across Git repositories and worktrees. The sidebar groups agents beneath each checkout. The right inspector shows filenames by Git status, with commit history and a branch push action.
+A Windows workspace for running coding agents across Git repositories and worktrees. The sidebar groups agents beneath each checkout. The right inspector groups filenames by Git status and lets you push the current branch.
 
 ## Install
 
@@ -18,7 +18,7 @@ The installer copies the layout and eight mods into the current user's Herdr app
 ## Using the workspace
 
 - Use the folder button beside **Projects** to add a repository by clone URL. Expand a checkout to see its agents. The agent menu includes sleep, wake, close, and delete.
-- In **Changes**, expand **Conflicts**, **Staged**, **Unstaged**, or **Committed** to see filenames. The **Commits** tab shows recent history. Select a commit there to inspect its patch. **Push branch** publishes the branch's existing commits.
+- In **Changes**, **Uncommitted** shows unstaged edits, untracked files, and merge conflicts. **Staged** shows changes in the Git index. **Committed** shows the net file changes in local commits awaiting push, using locally known remote refs. **Push branch** publishes the branch's existing commits.
 - Click a port badge to see listeners owned by a local Herdr terminal or one of its child processes. **Open in browser** appears after a listener responds over HTTP or HTTPS.
 - The bottom usage strip opens quota and credit details. Codex and Antigravity usage depend on the corresponding signed-in CLI on the local machine. Each installation reads its own account data.
 
