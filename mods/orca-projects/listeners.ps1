@@ -49,6 +49,14 @@ $rows = foreach ($root in $roots) {
             if ($child -ne $id -and $procs[$child].CreationDate -ge $p.CreationDate -and $roots -notcontains $child) { $queue.Enqueue($child) }
         }
     }
-    @{ root=$root; names=@($names | Sort-Object); ports=$listeners.ToArray() }
+    # A tool launched by another agent or a non-interactive Codex command is not a pane to resume.
+    $candidates = @($root) + @($children[$root] | Where-Object { $_ })
+    $clients = @($candidates | ForEach-Object { $procs[[int]$_] } | Where-Object {
+        $_.Name -eq 'codex.exe' -and $_.CreationDate -ge $procs[$root].CreationDate -and
+        $_.CommandLine -match '^\s*(?:"[^"]+"|\S+)(?:\s*$|\s+(?:resume|fork)(?:\s|$))'
+    })
+    $client = if ($clients.Count -eq 1) { $clients[0] }
+    $thread = if ($client -and $client.CommandLine -match '(?i)\sresume\s+"?([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})"?(?:\s|$)') { $Matches[1] }
+    @{ root=$root; names=@($names | Sort-Object); ports=$listeners.ToArray(); codexPid=$client.ProcessId; thread=$thread }
 }
 ConvertTo-Json -Compress -Depth 5 -InputObject @($rows)

@@ -4,12 +4,14 @@ param(
     [switch]$Force,
     [switch]$Backup,
     [switch]$Switch,
+    [switch]$EnableRecovery,
     [switch]$Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
 
 if ($Uninstall) {
+    & (Join-Path $PSScriptRoot 'recovery-settings.ps1') -AppHome $AppHome -Remove
     $removed = 0
     foreach ($rel in @('layouts/orca.json', 'layouts/orca.svg')) {
         $target = Join-Path $AppHome $rel
@@ -63,6 +65,9 @@ foreach ($entry in $pending) {
 }
 
 Write-Output "Orca installed in $AppHome ($installed new, $updated updated)."
+if ($EnableRecovery) {
+    & (Join-Path $PSScriptRoot 'recovery-settings.ps1') -AppHome $AppHome
+}
 
 if ($Switch) {
     $herdr = Get-Command herdr-app -ErrorAction SilentlyContinue

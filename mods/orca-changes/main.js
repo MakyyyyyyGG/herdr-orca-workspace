@@ -14,7 +14,9 @@ function location() {
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on };
 }
-const key = () => JSON.stringify(location());
+const key = (place = location()) => JSON.stringify(place);
+const REFRESH_MS = 10000;
+const MAX_SAVED_FOLDERS = 16;
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):
 // the folder watch would see it, and every refresh would start the next one.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
@@ -30,10 +32,11 @@ function badgeColor(file, t) {
 
 export default class Changes extends View {
   init(_props, cx) {
+    this.saved = new Map();
     this.files = []; this.folds = new Set(); this.pushState = null;
     this.range = null; this.preview = null; this.code = null; this.previewError = null;
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.timer.every(REFRESH_MS, (cx) => this.refresh(cx));
   }
 
   stopWatch() {
@@ -43,24 +46,25 @@ export default class Changes extends View {
   }
 
   async close() {
+    this.loading = null;
+    this.saved.clear();
     this.stopWatch();
-    this.code?.release?.();
-    this.code = null;
+    this.closePreview();
   }
 
   watch(root, cx) {
-    if (this.on || this.watched === root) return;
+    if (this.on || this.watched?.root === root) return;
     this.stopWatch();
-    this.watched = root;
+    const watch = this.watched = { root };
     cx.spawn(async (cx) => {
       try {
-        while (this.watched === root) {
+        while (this.watched === watch) {
           const handle = watchFolder(root);
           this.watchHandle = handle;
           await handle;
-          if (this.watched === root) this.refresh(cx);
+          if (this.watched === watch) this.refresh(cx);
         }
-      } catch { if (this.watched === root) this.stopWatch(); }
+      } catch { if (this.watched === watch) this.stopWatch(); }
     });
   }
 
@@ -76,7 +80,7 @@ export default class Changes extends View {
     if (!this.root || !file) return;
     this.code?.release?.();
     this.code = null;
-    this.preview = file;
+    const preview = this.preview = { ...file };
     this.previewError = null;
     const { root, on, context, range } = this;
     cx.notify();
@@ -116,7 +120,7 @@ export default class Changes extends View {
             lang = LANG[ext] ?? ext;
           }
         }
-        if (this.preview !== file || this.context !== context) return;
+        if (this.preview !== preview || this.context !== context) return;
         const t = theme();
         this.code = EditorState.new({
           language: lang,
@@ -127,7 +131,7 @@ export default class Changes extends View {
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 }
         });
       } catch (e) {
-        if (this.preview === file && this.context === context) {
+        if (this.preview === preview && this.context === context) {
           this.previewError = e.message || String(e);
         }
       } finally { ctx.notify(); }
@@ -135,49 +139,68 @@ export default class Changes extends View {
   }
 
   refresh(cx) {
-    if (this.loading || this.busy) return;
-    const { cwd, on } = location(), context = key();
+    const place = location(), { cwd, on } = place, context = key(place);
     if (context !== this.context) {
-      this.context = context; this.root = null; this.files = []; this.folds.clear();
-      this.pushState = null; this.range = null; this.remote = null; this.error = null; this.note = null;
+      if (this.root) {
+        const { root, files, folds, pushState, range, remote, lastRead } = this;
+        this.saved.set(this.context, { root, files, folds, pushState, range, remote, lastRead });
+      }
+      const saved = this.saved.get(context);
+      this.saved.delete(context);
+      if (this.saved.size > MAX_SAVED_FOLDERS) this.saved.delete(this.saved.keys().next().value);
       this.stopWatch();
       this.closePreview();
+      this.context = context; this.on = on; this.loading = null;
+      this.root = saved?.root; this.files = saved?.files ?? []; this.folds = saved?.folds ?? new Set();
+      this.pushState = saved?.pushState; this.range = saved?.range; this.remote = saved?.remote;
+      this.error = null; this.note = null; this.lastRead = saved?.lastRead;
+      if (saved) {
+        this.watch(saved.root, cx);
+        if (Date.now() - saved.lastRead < REFRESH_MS) return;
+      }
     }
-    if (!cwd) return;
-    this.loading = true;
+    if (!cwd || this.loading || this.busy === context) return;
+    const request = this.loading = {};
+    const current = () => this.loading === request && key() === context;
+    this.lastRead = 0;
     cx.spawn(async (cx) => {
       try {
         const top = await host.git(["rev-parse", "--show-toplevel"], { cwd, on });
-        if (key() !== context) return;
-        if (top.code !== 0) { this.root = null; this.pushState = null; this.range = null; this.files = []; this.error = "Not a git repository"; return; }
+        if (!current()) return;
+        if (top.code !== 0) {
+          this.stopWatch(); this.closePreview();
+          this.root = null; this.pushState = null; this.range = null; this.files = []; this.error = "Not a git repository"; return;
+        }
         const root = top.stdout.trim(), git = (args) => host.git([...READ, ...args], { cwd: root, on });
         const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
         if (status.code !== 0) throw new Error(status.stderr);
+        if (!current()) return;
         const entries = status.stdout.split("\0").filter(Boolean);
         const destination = await pushInfo(git,this.remote);
         const range = await committedRange(git,destination);
-        const committed = await committedFiles(git,destination);
-        if (key() !== context) return;
+        const committed = await committedFiles(git,destination,range);
+        if (!current()) return;
         this.pushState = destination;
         this.range = range;
         this.root = root; this.on = on; this.files = [...reviewFiles(entries), ...committed]; this.error = null;
+        this.lastRead = Date.now();
         this.watch(root, cx);
-      } catch (e) { if (key() === context) this.error = String(e); }
-      finally { this.loading = false; cx.notify(); }
+      } catch (e) { if (current()) this.error = String(e); }
+      finally { if (this.loading === request) this.loading = null; cx.notify(); }
     });
   }
 
   push(cx) {
-    if (!this.pushState?.ready || this.busy || this.loading || key() !== this.context) return;
+    if (!this.pushState?.ready || this.busy || this.loading || this.error || key() !== this.context) return;
     const {root,on,context,pushState} = this;
-    this.busy = true; this.note = null; cx.notify();
+    this.busy = context; this.lastRead = 0; this.note = null; cx.notify();
     cx.spawn(async ctx => {
       try {
         const message = await pushBranch((args,timeout) => host.git(args,{cwd:root,on,timeout:timeout || 5000}),pushState);
         if (key() === context) { this.note = message; this.failed = false; }
       } catch(e) {
         if (key() === context) { this.note = e.message || String(e); this.failed = true; }
-      } finally { this.busy = false; this.refresh(ctx); ctx.notify(); }
+      } finally { this.busy = null; if (key() === context) this.refresh(ctx); ctx.notify(); }
     });
   }
 
@@ -215,7 +238,7 @@ export default class Changes extends View {
   render(cx) {
     if (key() !== this.context) this.refresh(cx);
     const t = theme();
-    const push = this.pushState, enabled = Boolean(push?.ready && !this.busy && !this.loading);
+    const push = this.pushState, enabled = Boolean(push?.ready && !this.busy && !this.loading && !this.error);
     if (this.preview) {
       return v_flex().id("changes").size_full().min_h(0).overflow_hidden().bg(t.chrome).text_color(t.foreground).text_size(13)
         .child(h_flex().h(32).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
@@ -245,6 +268,6 @@ export default class Changes extends View {
         .child(h_flex().id("push").h(31).px(10).rounded(6).items_center().text_size(12)
           .bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim)
           .tooltip("Push existing local commits on this branch").when(enabled, el => el.cursor_pointer().hover(s=>s.opacity(0.87)))
-          .on_click((_,ctx) => this.push(ctx)).child(this.busy ? "Pushing…" : "Push branch")));
+          .on_click((_,ctx) => this.push(ctx)).child(this.busy === this.context ? "Pushing…" : "Push branch")));
   }
 }

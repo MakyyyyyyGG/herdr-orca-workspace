@@ -38,8 +38,8 @@ export async function committedRange(git, destination) {
   return { base, head };
 }
 
-export async function committedFiles(git, destination) {
-  const range = await committedRange(git, destination);
+export async function committedFiles(git, destination, range) {
+  if (range === undefined) range = await committedRange(git, destination);
   if (!range) return [];
   const names = range.base
     ? await git(["diff","--name-only","--no-renames","--no-ext-diff","--no-textconv","-z",range.base,range.head,"--"])

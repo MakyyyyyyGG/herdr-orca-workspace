@@ -6,6 +6,7 @@ import { normalize, basename, key, parseWorktrees, locations, groupProjects } fr
 import { webAddress } from "./web-port.js";
 import { exitedAgent, endpoints, portLabel, portHint } from "./activity.js";
 import { createHost } from "./host.js";
+import { checkpoint } from "./recovery.js";
 
 const host = createHost({ exec, window });
 const asset = (name, size) => svg("mods/workspace-chrome/" + name + ".svg").size(size).flex_none();
@@ -80,6 +81,13 @@ export default class Projects extends View {
           for (const term of local) {
             const row = rows.get(ids.get(term.address));
             if (!row) { this.roots.delete(term.address); continue; }
+            const saved = term.labels?.["orca.codexPane"] || "";
+            const mark = checkpoint(row, saved);
+            if (mark !== null) {
+              const args = ["label", term.address, "orca.codexPane=" + mark];
+              if (mark && row.thread) args.push("orca.codexThread=" + row.codexPid + "/" + row.thread);
+              await hc(args);
+            }
             const a = ag.find(a => a.address === term.address);
             const p = ps.find(p => p.terminal === term.address);
             next[term.address] = { exited: exitedAgent(a?.program || p?.program || term.program, a?.app || term.report, row.names), ports: row.ports };
