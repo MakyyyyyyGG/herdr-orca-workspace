@@ -2,7 +2,7 @@ const slash = path => path.replace(/\\/g, "/").replace(/\/+$/, "");
 export const comparable = path => /^[a-z]:|^[/\\]{2}/i.test(path) ? slash(path).toLowerCase() : slash(path);
 
 export function repository(text) {
-  const url = text.trim().replace(/\/+$/, "");
+  const url = text.trim().replace(/^git\s+clone\s+/i, "").trim().replace(/\/+$/, "");
   const remote = /^(https?|ssh):\/\/([^/?#]+)\/([^?#]+)$/i.exec(url);
   const scp = /^([a-z0-9._-]+@[a-z0-9._-]+):([^?#]+)$/i.exec(url);
   if ((!remote && !scp) || /[\s\\\x00-\x1f\x7f]/.test(url)) throw new Error("Paste an HTTPS or SSH repository clone URL.");

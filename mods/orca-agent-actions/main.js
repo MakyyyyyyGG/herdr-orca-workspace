@@ -73,7 +73,9 @@ export default class AgentActions extends View {
       return root.child(v_flex().id("closed-list").max_h(330).overflow_y_scrollbar().gap(4)
         .children(closed.map(r => button("closed-"+r.address+r.created, r.name + " · " + r.address, ctx => {
           this.target = r; this.error = ""; this.inspect(ctx); ctx.notify();
-        }))).when(!closed.length, el => el.child("No closed agents")));
+        }))).when(!closed.length, el => el.child(div().text_size(12).text_color(t.muted).child("No closed agents"))))
+        .when(closed.length > 0, el => el.child(h_flex().pt(6).border_t(1).border_color(t.border).justify_end()
+          .child(button("clear-closed", "Clear list", () => { setShared(history, []); this.dismiss(); }))));
     }
     if (this.error) root.child(div().text_size(12).text_color(t.blocked).child(this.error));
     if (!this.term) return root.when(!this.error, el => el.child("Reading terminal…")).when(target.closed && Boolean(this.error), el =>
@@ -91,7 +93,7 @@ export default class AgentActions extends View {
     const actions = live ? [asleep(this.term) ? "wake" : "sleep","close","delete"] : ["delete"];
     return root.children(actions.map(op => v_flex().id("action-"+op).px(8).py(6).gap(2).rounded(6).cursor_pointer().hover(el => el.bg(t.hover))
       .on_click((_,ctx) => { if (this.busy) return; if (op === "close" || op === "delete") { this.confirm = op; ctx.notify(); } else this.perform(op,ctx); })
-      .child(div().font_medium().text_size(12.5).text_color(op === "delete" ? "#f4a69e" : t.foreground).child(titles[op]))
+      .child(div().font_medium().text_size(12.5).text_color(op === "delete" ? (t.ansi1 || "#f4a69e") : t.foreground).child(titles[op]))
       .child(div().text_size(11).text_color(t.muted).child(descriptions[op]))))
       .when(this.busy, el => el.child(div().text_size(11).text_color(t.muted).child("Waiting for the terminal…")));
   }

@@ -16,9 +16,13 @@ export function exitedAgent(program, report, names) {
 }
 export function endpoints(items) {
   const map = new Map();
-  for (const item of items) for (const p of item.ports || []) {
-    const id = [p.bind,p.port,p.pid].join("/");
-    if (!map.has(id)) map.set(id,p);
+  for (const item of items) {
+    if (!Array.isArray(item?.ports)) continue;
+    for (const p of item.ports) {
+      if (typeof p?.bind !== "string" || !Number.isInteger(p.port) || !Number.isInteger(p.pid)) continue;
+      const id = [p.bind, p.port, p.pid].join("/");
+      if (!map.has(id)) map.set(id, p);
+    }
   }
   return [...map.values()].sort((a,b) => a.port-b.port || a.pid-b.pid);
 }

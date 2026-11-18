@@ -1,8 +1,10 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { checking, closeOverlay, nextCommand, openOverlay, props, run, shared, setShared, theme } from "herdr";
+import { checking, closeOverlay, exec, nextCommand, openOverlay, props, run, shared, setShared, theme, window } from "herdr";
 import { changePreference, creditPreference, snapshot } from "./account.js";
+import { createHost } from "./host.js";
 
+const host = createHost({ exec, window });
 const cache = "orca.account.summary";
 const busyKey = "orca.account.refreshing";
 const colors = { Codex: "#84d6c4", Gemini: "#a6c5f5", "Claude/GPT": "#f2bc8a", Argon: "#b5a2eb", Antigravity: "#b5a2eb" };
@@ -36,6 +38,7 @@ export default class Usage extends View {
     this.tab = props()?.tab || "limits";
     cx.timer.after(100, ctx => { this.ready = true; ctx.notify(); });
     if (checking() || props()?.overlay) return;
+    setShared(busyKey, 0);
     this.refresh(cx);
     cx.timer.every(60000, ctx => { if (Date.now() - (this.checked || 0) > 294000) this.refresh(ctx); ctx.notify(); });
     cx.spawn(async ctx => {
@@ -81,10 +84,14 @@ export default class Usage extends View {
   }
 
   balance(provider, account, t) {
-    return v_flex().flex_1().min_w(0).gap(5).p(12).rounded(8).bg(provider === "Codex" ? "#233b39" : "#302d40")
+    const headingFont = host.isWindows() ? "Bahnschrift" : undefined;
+    const accent = ink(provider);
+    return v_flex().flex_1().min_w(0).gap(5).p(12).rounded(8).bg(t.surface).border_1().border_color(t.border)
       .child(h_flex().gap(7).items_center().child(logo(provider, 15)).child(label(provider, 12, t.foreground)))
-      .child(h_flex().items_center().gap(7).child(div().font_family("Bahnschrift").text_size(25).text_color(ink(provider)).child(money(account)))
-        .when(typeof account?.balance === "number" && !account.unlimited, el => el.child(label("credits", 11, t.muted))));
+      .child(h_flex().items_center().gap(7)
+        .child(div().when(Boolean(headingFont), el => el.font_family(headingFont)).font_semibold().text_size(25).text_color(account?.available === false ? t.dim : accent).child(money(account)))
+        .when(typeof account?.balance === "number" && !account.unlimited, el => el.child(label("credits", 11, t.muted))))
+      .when(Boolean(account?.error), el => label(account.error, 10.5, t.dim));
   }
 
   limits(d, t) {
@@ -98,13 +105,14 @@ export default class Usage extends View {
           .child(div().w(84).truncate().text_size(12).text_color(t.foreground).child(i ? "" : group.name))
           .child(div().w(45).text_size(11).text_color(t.muted).child(title))
           .child(w ? this.meter("fill-" + group.name + i, w.left, this.track, 6, color, t, d.motion !== false) : div().w(this.track).child(label("Unavailable", 11, t.dim)))
-          .child(div().w(34).text_right().text_size(12).text_color(t.foreground).child(w ? Math.round(w.left) + "%" : ""))
+          .child(div().w(34).text_right().text_size(12).text_color(w && w.left <= 15 ? t.blocked : t.foreground).child(w ? Math.round(w.left) + "%" : ""))
           .child(div().flex_1().text_right().text_size(11).text_color(t.muted).child(until(w?.end))));
       });
     }
+    const emptyMsg = d.checked ? "No signed-in provider CLIs reported quota limits." : "Reading provider limits…";
     return v_flex().id("limits-page").gap(2).child(h_flex().h(27).items_center()
       .child(label("Remaining allowance", 12, t.muted)).child(div().flex_1()).child(label("Resets in", 11, t.dim)))
-      .children(rows).when(!rows.length, el => el.child(label("Reading provider limits…", 12, t.muted)));
+      .children(rows).when(!rows.length, el => el.child(div().py(8).child(label(emptyMsg, 12, t.muted))));
   }
 
   credits(d, t) {
@@ -130,15 +138,16 @@ export default class Usage extends View {
 
   dialog(d, t, refreshing) {
     const chips = [["limits","Limits"],["credits","Credit controls"]];
+    const headingFont = host.isWindows() ? "Bahnschrift" : undefined;
     return v_flex().id("account-dialog").w_full().p(20).gap(12).bg(t.popover).text_color(t.foreground)
       .on_size_change((s, ctx) => { const w = Math.max(35, Math.min(260, s.width - 302)); if (w !== this.track) { this.track = w; ctx.notify(); } })
-      .child(h_flex().items_center().gap(9).child(div().flex_1().font_family("Bahnschrift").text_size(23).child("Usage & credits"))
+      .child(h_flex().items_center().gap(9).child(div().flex_1().when(Boolean(headingFont), el => el.font_family(headingFont)).font_semibold().text_size(23).child("Usage & credits"))
         .child(action("refresh", refreshing ? "Refreshing…" : "Refresh", () => run("orca-usage.refresh"), t))
-        .child(div().id("close").p(5).cursor_pointer().tooltip("Close").on_click(() => closeOverlay(props().overlay)).child(icon("x", 15))))
+        .child(div().id("close").p(5).rounded(4).cursor_pointer().hover(el => el.bg(t.hover)).tooltip("Close").on_click(() => closeOverlay(props().overlay)).child(icon("x", 15))))
       .child(h_flex().gap(8).child(this.balance("Codex", d.codex, t)).child(this.balance("Antigravity", d.google, t)))
       .child(h_flex().gap(6).items_center().children(chips.map(([id, text]) => h_flex().id("view-" + id).h(27).px(10).rounded(6).items_center()
         .bg(this.tab === id ? t.selected : t.popover).text_color(this.tab === id ? t.foreground : t.muted).text_size(12).cursor_pointer()
-        .on_click((_, ctx) => { this.tab = id; ctx.notify(); }).child(text))))
+        .hover(el => el.bg(t.hover)).on_click((_, ctx) => { this.tab = id; ctx.notify(); }).child(text))))
       .child(v_flex().id("account-page").max_h(310).overflow_y_scrollbar().child(this.tab === "credits" ? this.credits(d, t) : this.limits(d, t)))
       .child(h_flex().pt(9).border_t(1).border_color(t.border).items_center().child(label(d.checked ? "Updated " + new Date(d.checked).toTimeString().slice(0,5) : "Waiting for account data", 10.8, t.dim)));
   }
@@ -148,25 +157,29 @@ export default class Usage extends View {
     const refreshing = Date.now() - Number(shared(busyKey) || 0) < 25000;
     if (p.overlay) return this.dialog(d, t, refreshing);
     const compact = this.width < 930;
+    const groups = (d.groups || []).filter(g => g.windows?.length > 0);
+    const hasCodexBalance = typeof d.codex?.balance === "number" || d.codex?.unlimited;
+    const creditLabel = !hasCodexBalance ? "Usage" : compact ? "Credits" : "Credits  " + money(d.codex);
     return h_flex().id("usage-strip").size_full().px(12).gap(compact ? 9 : 16).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .on_size_change((s, ctx) => { if (this.width !== s.width) { this.width = s.width; ctx.notify(); } })
-      .child(div().id("limits").text_size(11.5).font_medium().text_color(t.foreground).cursor_pointer().on_click(() => open("limits")).child("Quota left"))
-      .when(!d.groups, el => el.child(label("Reading limits…", 11, t.muted)))
-      .children((d.groups || []).map(g => {
+      .child(div().id("limits").text_size(11.5).font_medium().text_color(t.foreground).cursor_pointer().tooltip("Open quota & credit details").on_click(() => open("limits")).child("Quota left"))
+      .when(!d.checked && !groups.length, el => el.child(label("Reading limits…", 11, t.muted)))
+      .when(Boolean(d.checked) && !groups.length, el => el.child(div().cursor_pointer().on_click(() => open("limits")).child(label("No provider CLIs signed in", 11, t.dim))))
+      .children(groups.map(g => {
         const sorted = [...g.windows].sort((a,b) => (a.end || Infinity) - (b.end || Infinity));
         const lowest = [...sorted].sort((a,b) => a.left - b.left)[0];
         const visible = this.width < 1160 ? (lowest ? [lowest] : []) : sorted;
+        const barColor = lowest && lowest.left <= 15 ? t.blocked : ink(g.name);
         return h_flex().id("usage-" + g.name).gap(5).items_center().cursor_pointer().on_click(() => open("limits"))
           .when(!compact, el => el.child(logo(g.provider, 12))).child(label(g.name, 11, t.muted))
-          .when(!compact && lowest, el => el.child(this.meter("foot-" + g.name, lowest.left, 27, 4, ink(g.name), t, d.motion !== false)))
+          .when(!compact && lowest, el => el.child(this.meter("foot-" + g.name, lowest.left, 27, 4, barColor, t, d.motion !== false)))
           .when(!visible.length, el => el.child(label("—", 11, t.dim)))
-          .children(visible.map(b => h_flex().gap(4).items_center().child(label(Math.round(b.left) + "%", 11, ink(g.name)))
+          .children(visible.map(b => h_flex().gap(4).items_center().child(label(Math.round(b.left) + "%", 11, b.left <= 15 ? t.blocked : ink(g.name)))
             .when(!compact, el => el.child(label(until(b.end), 10, t.dim)))));
       }))
       .child(div().flex_1())
-      .child(action("credits", compact ? "Credits" : "Credits  " + money(d.codex), () => open("credits"), t))
-      .child(div().id("refresh").p(3).text_color(t.muted).cursor_pointer().tooltip("Refresh usage").on_click((_,ctx) => this.refresh(ctx))
+      .child(action("credits", creditLabel, () => open("credits"), t))
+      .child(div().id("refresh").p(3).rounded(4).text_color(t.muted).cursor_pointer().hover(el => el.bg(t.hover)).tooltip("Refresh usage").on_click((_,ctx) => this.refresh(ctx))
         .child(refreshing && d.motion !== false ? icon("spinner",12).spin(850) : "↻"));
   }
 }
-

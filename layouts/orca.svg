@@ -1,1 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" rx="7" fill="#171717"/><path d="M0 0h84v167H0z" fill="#292929"/><g fill="#393939"><rect x="6" y="24" width="72" height="12" rx="3"/><rect x="6" y="41" width="72" height="43" rx="4"/><rect x="87" y="3" width="60" height="13" rx="3"/></g><g fill="#b7b7b7"><rect x="9" y="9" width="21" height="3"/><rect x="21" y="47" width="28" height="3"/><rect x="28" y="61" width="35" height="2"/><rect x="28" y="72" width="23" height="2"/></g><path d="M10 45h4l1 2h4v5h-9z" fill="#edb938"/><g fill="#42be9c"><circle cx="21" cy="62" r="2"/><circle cx="21" cy="73" r="2"/></g><path d="M0 166h320" stroke="#373737"/><path d="M8 173h24m6 0h17m8 0h24m6 0h17" stroke="#aaa" stroke-width="2"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" rx="7" fill="#12171d"/>
+  <!-- Left sidebar (Projects) -->
+  <path d="M0 0h76v164H0z" fill="#202831"/>
+  <rect x="6" y="6" width="30" height="5" rx="2" fill="#e9eef2" opacity=".75"/>
+  <rect x="6" y="18" width="64" height="10" rx="3" fill="#2c3641"/>
+  <rect x="6" y="32" width="64" height="44" rx="4" fill="#2c3842" stroke="#46535f" stroke-width=".8"/>
+  <path d="M11 38h5l1 1.5h4v4.5h-10z" fill="#eac490"/>
+  <rect x="24" y="39" width="26" height="3.5" rx="1.5" fill="#e9eef2"/>
+  <circle cx="17" cy="52" r="2" fill="#78d7bb"/>
+  <rect x="22" y="50.5" width="34" height="3" rx="1.5" fill="#b9c6ce"/>
+  <circle cx="17" cy="61" r="2" fill="#efbd85"/>
+  <rect x="22" y="59.5" width="28" height="3" rx="1.5" fill="#b9c6ce"/>
+  <circle cx="17" cy="70" r="2" fill="#9ac5e8"/>
+  <rect x="22" y="68.5" width="30" height="3" rx="1.5" fill="#b9c6ce"/>
+  <!-- Tab bar -->
+  <rect x="76" y="0" width="244" height="18" fill="#202831"/>
+  <rect x="81" y="4" width="44" height="10" rx="3" fill="#2c3842" stroke="#38434c" stroke-width=".8"/>
+  <rect x="128" y="4" width="36" height="10" rx="3" fill="#202831"/>
+  <rect x="268" y="4" width="30" height="10" rx="3" fill="#354650"/>
+  <!-- Main terminal panes -->
+  <rect x="81" y="22" width="149" height="67" rx="5" fill="#161c22" stroke="#5e8e88" stroke-width="1"/>
+  <rect x="87" y="27" width="42" height="3" rx="1.5" fill="#8bd9c7" opacity=".8"/>
+  <rect x="87" y="36" width="68" height="3" rx="1.5" fill="#9aaab6" opacity=".6"/>
+  <rect x="87" y="43" width="52" height="3" rx="1.5" fill="#9aaab6" opacity=".4"/>
+  <rect x="81" y="93" width="149" height="67" rx="5" fill="#161c22" stroke="#38434c" stroke-width=".8"/>
+  <rect x="87" y="98" width="36" height="3" rx="1.5" fill="#b9c6ce" opacity=".6"/>
+  <rect x="87" y="107" width="58" height="3" rx="1.5" fill="#9aaab6" opacity=".4"/>
+  <!-- Right Inspector panel -->
+  <rect x="234" y="22" width="81" height="138" rx="5" fill="#202831" stroke="#38434c" stroke-width=".8"/>
+  <rect x="240" y="28" width="12" height="12" rx="3" fill="#354650"/>
+  <rect x="256" y="29" width="34" height="4" rx="1.5" fill="#e9eef2"/>
+  <rect x="256" y="36" width="24" height="3" rx="1.5" fill="#8bd9c7" opacity=".85"/>
+  <rect x="240" y="46" width="69" height="12" rx="3.5" fill="#12171d"/>
+  <rect x="242" y="48" width="32" height="8" rx="2.5" fill="#354650"/>
+  <rect x="242" y="65" width="44" height="3" rx="1.5" fill="#b9c6ce" opacity=".7"/>
+  <rect x="242" y="74" width="54" height="3" rx="1.5" fill="#9aaab6" opacity=".6"/>
+  <rect x="242" y="83" width="48" height="3" rx="1.5" fill="#8bd9c7" opacity=".7"/>
+  <rect x="242" y="92" width="38" height="3" rx="1.5" fill="#9aaab6" opacity=".6"/>
+  <rect x="275" y="143" width="34" height="11" rx="3" fill="#8bd9c7"/>
+  <!-- Bottom usage bar -->
+  <rect x="0" y="164" width="320" height="16" fill="#202831"/>
+  <path d="M0 164h320M76 0v164" stroke="#38434c" stroke-width="1"/>
+  <rect x="8" y="170" width="28" height="3" rx="1.5" fill="#e9eef2" opacity=".7"/>
+  <rect x="44" y="170" width="26" height="3" rx="1.5" fill="#84d6c4"/>
+  <rect x="78" y="170" width="26" height="3" rx="1.5" fill="#a6c5f5"/>
+  <rect x="112" y="170" width="26" height="3" rx="1.5" fill="#f2bc8a"/>
+  <rect x="274" y="168" width="36" height="7" rx="2.5" fill="#2c3842"/>
+</svg>

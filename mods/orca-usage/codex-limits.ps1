@@ -1,7 +1,14 @@
 $ErrorActionPreference = 'Stop'
+$cmd = Get-Command codex.exe -ErrorAction SilentlyContinue
+if (-not $cmd) { $cmd = Get-Command codex -ErrorAction Stop }
 $start = New-Object Diagnostics.ProcessStartInfo
-$start.FileName = (Get-Command codex.exe -ErrorAction Stop).Source
-$start.Arguments = 'app-server --stdio'
+if ($cmd.Source -match '\.(cmd|bat)$') {
+    $start.FileName = 'cmd.exe'
+    $start.Arguments = '/d /c ""' + $cmd.Source + '" app-server --stdio"'
+} else {
+    $start.FileName = $cmd.Source
+    $start.Arguments = 'app-server --stdio'
+}
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.RedirectStandardInput = $true
@@ -38,8 +45,10 @@ try {
     }
     $animation = $true
     try {
-        Add-Type -AssemblyName PresentationFramework
-        $animation = [System.Windows.SystemParameters]::ClientAreaAnimation
+        $sig = '[DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref bool pvParam, uint fWinIni);'
+        $win = Add-Type -MemberDefinition $sig -Name WinAnim -Namespace OrcaWin32 -PassThru
+        $enabled = $true
+        if ($win::SystemParametersInfo(0x1042, 0, [ref]$enabled, 0)) { $animation = $enabled }
     } catch {}
     [pscustomobject]@{
         windows = @($windows)

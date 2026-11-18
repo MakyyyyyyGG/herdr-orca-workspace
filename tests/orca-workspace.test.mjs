@@ -17,6 +17,8 @@ import { pushInfo, pushBranch } from "../mods/orca-changes/push.js";
 import { browserHost, webAddress } from "../mods/orca-projects/web-port.js";
 import { normalize, key, locations, parseWorktrees, groupProjects } from "../mods/orca-projects/projects.js";
 
+import { repository } from "../mods/orca-add-project/repository.js";
+
 const exec = promisify(execFile);
 const home = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const core = path.join(process.env.LOCALAPPDATA, "Programs/herdr-core/hc.exe");
@@ -30,15 +32,48 @@ async function waitFor(fn, name) {
   for (let i=0; i<70; i++) { const value=await fn(); if(value) return value; await delay(120); }
   throw Error("Timed out waiting for "+name);
 }
-async function filesModel(file,herdr) {
-  const filename=path.join(home,"mods",file,"main.js");
-  const source=(await readFile(filename,"utf8")).replace(/import \{([^}]+)\} from "(?:gpui-kit|gpui-base)";/g,(_,names)=>"const {"+names+"}=globalThis.__gpuiTest;")
-    .replace(/import \{([^}]+)\} from "herdr";/,(_,names)=>"const {"+names+"}=globalThis.__herdrTest;")
-    .replace(/from "(\.\/[^"]+)"/g,(_,relative)=>'from "'+pathToFileURL(path.resolve(path.dirname(filename),relative)).href+'"');
-  globalThis.__herdrTest=herdr;
-  globalThis.__gpuiTest={View:class {},div:element,v_flex:element,h_flex:element,svg:element,Scrollbar:{vertical:element},v_virtual_list:element};
-  const url="data:text/javascript;base64,"+Buffer.from(source).toString("base64")+"#"+Math.random();
-  return (await import(url)).default;
+async function modSource(file, relPath, seen = new Map()) {
+  const full = path.resolve(home, "mods", file, relPath);
+  if (seen.has(full)) return seen.get(full);
+  const raw = await readFile(full, "utf8");
+  const dir = path.dirname(full);
+  const relImports = [...raw.matchAll(/from\s+"(\.\/[^"]+)"/g)];
+  let source = raw
+    .replace(/import \{([^}]+)\} from "(?:gpui-kit|gpui-base)";/g, (_, names) => "const {" + names + "}=globalThis.__gpuiTest;")
+    .replace(/import \{([^}]+)\} from "herdr";/g, (_, names) => "const {" + names + "}=globalThis.__herdrTest;");
+  for (const m of relImports) {
+    const childRel = path.relative(path.join(home, "mods", file), path.resolve(dir, m[1]));
+    const childUrl = await modSource(file, childRel, seen);
+    source = source.replaceAll(`"${m[1]}"`, `"${childUrl}"`);
+  }
+  const url = "data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + Math.random();
+  seen.set(full, url);
+  return url;
+}
+async function modImport(file, relPath, herdr, gpuiExtra = {}) {
+  globalThis.__herdrTest = herdr;
+  const inputStub = () => ({ on(){}, value: () => "", set_value(){}, focus(){} });
+  const editorStub = () => ({ release(){} });
+  globalThis.__gpuiTest = {
+    View: class {},
+    div: element,
+    v_flex: element,
+    h_flex: element,
+    svg: element,
+    image: element,
+    ScrollHandle: { new: () => ({ scroll_to_item(){} }) },
+    Scrollbar: { vertical: element },
+    v_virtual_list: element,
+    InputState: { new: inputStub },
+    Input: { new: element },
+    EditorState: { new: editorStub },
+    Editor: { new: element },
+    ...gpuiExtra
+  };
+  return import(await modSource(file, relPath));
+}
+async function filesModel(file, herdr, gpuiExtra = {}) {
+  return (await modImport(file, "main.js", herdr, gpuiExtra)).default;
 }
 
 function element() {
@@ -63,7 +98,7 @@ async function commandResult(cmd,args,options={}) {
 }
 
 test("All changed Herdr mods load and the layout references one inspector switch and one usage strip",async()=>{
-  for(const mod of ["orca-tabs","orca-projects","orca-add-project","orca-agent-actions","orca-files","orca-changes","orca-inspector","orca-usage"]) {
+  for(const mod of ["orca-tabs","orca-projects","orca-project-actions","orca-add-project","orca-agent-actions","orca-files","orca-changes","orca-inspector","orca-usage"]) {
     const out=await run(app,["check",path.join(home,"mods",mod)]); assert.match(out,/check passed/);
   }
   const layout=JSON.parse(await readFile(path.join(home,"layouts/orca.json")));
@@ -81,6 +116,48 @@ test("Provider detection and listening endpoint identity",()=>{
   for(const [app,names,gone] of cases)assert.equal(exitedAgent({key:app},app,names),gone,JSON.stringify([app,names]));
   const p={bind:"127.0.0.1",port:3000,pid:1};const result=endpoints([{ports:[p,p]},{ports:[{...p,bind:"[::1]"},{...p,port:4000}]}]);
   assert.equal(result.length,3);assert.equal(portLabel(result),":3000 +1");assert.equal(portLabel([]),"");
+});
+
+test("Left sidebar keeps creation working while the project list fails and recovers", async () => {
+  const commands = [];
+  let offline = true, folder = null, closed = 0, redraws = 0, pending;
+  const host = {
+    theme: () => ({}), layout: () => null, checking: () => false, props: () => ({}),
+    spaces: () => { if (offline) throw Error("Core reconnecting"); return []; },
+    panes: () => [], terminals: () => [], agents: () => [], shared: () => null,
+    home: () => "D:/work", window: () => ({ platform: "linux" }), setAgentOrder() {},
+    exec: async () => { throw Error("Git unavailable"); },
+    pickFolder: async () => folder, closeOverlay: () => { closed++; },
+    run: (name, args) => commands.push([name, args])
+  };
+  const cx = { timer: { after() {}, every() {} }, focus_handle: () => ({}),
+    notify: () => { redraws++; }, spawn: fn => { pending = fn(cx); } };
+  const item = (view, id) => flatten(view.render(cx)).find(node => node?.key === id);
+  const Projects = await filesModel("orca-projects", host), projects = new Projects();
+  projects.init(null, cx);
+  const retry = item(projects, "retry-projects");
+  assert.ok(retry);
+  const Actions = await filesModel("orca-project-actions", host), actions = new Actions();
+  item(actions, "new-space").click();
+  item(actions, "open-project").click();
+  assert.deepEqual(commands, [["space.new", { machine: "" }], ["mod.open", { name: "orca-add-project" }]]);
+
+  const Add = await filesModel("orca-add-project", host), dialog = new Add();
+  dialog.init(null, cx);
+  item(dialog, "folder").click(null, cx);
+  await pending;
+  assert.equal(closed, 0);
+  assert.equal(commands.length, 2);
+  folder = "D:/My projects";
+  item(dialog, "folder").click(null, cx);
+  await pending;
+  assert.deepEqual(commands[2], ["space.new", { folder, machine: "" }]);
+  assert.equal(closed, 1);
+  offline = false;
+  const before = redraws;
+  retry.click(null, cx);
+  assert.ok(redraws > before);
+  assert.ok(item(projects, "projects-empty"));
 });
 
 test("Process ownership, live listeners, clear screen, sleep, wake, stale report, close and delete on an isolated terminal",async()=>{
@@ -176,7 +253,12 @@ test("Only validated HTTP and HTTPS rows offer a browser action, including after
   const sockets=new Set(), servers=[];
   const listen=async server=>{
     servers.push(server);
-    server.on("connection",s=>{sockets.add(s);s.on("close",()=>sockets.delete(s));});
+    server.on("connection",s=>{
+      sockets.add(s);
+      s.on("close",()=>sockets.delete(s));
+      // The fixture intentionally receives probes using the wrong protocol.
+      s.on("error", error => { if (error.code !== "ECONNRESET") throw error; });
+    });
     await new Promise((ok,fail)=>server.once("error",fail).listen(0,"127.0.0.1",ok));
     return {pid:process.pid,process:"test",bind:"127.0.0.1",port:server.address().port};
   };
@@ -266,4 +348,148 @@ test("The inspector's GitHub menu links to the selected repository without forwa
   prop={github:panel.github};const menu=flatten(panel.render(cx));for(const id of ["pulls","issues"])menu.find(n=>typeof n==="object"&&n.key===id).click(null,cx);
   assert.deepEqual(opened,["https://github.com/octocat/example/pulls","https://github.com/octocat/example/issues"]);
   url="https://github.com.example.test/octocat/example.git";prop={};panel.lookup(loc,cx);await pending;assert.equal(panel.github,null);
+});
+
+test("Shared host.js stays identical across mods and every mod survives window() returning null",async()=>{
+  const hostMods=["orca-projects","orca-changes","orca-files","orca-inspector","orca-add-project","orca-usage"];
+  const contents=await Promise.all(hostMods.map(m=>readFile(path.join(home,"mods",m,"host.js"),"utf8")));
+  for(const text of contents) assert.equal(text,contents[0]);
+
+  const nullHerdr={
+    agents:()=>[],appHome:()=>home,checking:()=>true,closeOverlay(){},exec:async()=>({code:1,stdout:"",stderr:""}),
+    focused:()=>null,hc:async()=>({code:1,stdout:"",stderr:""}),home:()=>home,layout:()=>null,
+    nextCommand:()=>new Promise(()=>{}),notify(){},openOverlay(){},panes:()=>[],pickFolder:async()=>null,
+    props:()=>({}),readTextFile:async()=>null,run(){},setAgentOrder(){},setShared(){},settings:()=>({}),
+    shared:()=>null,spaces:()=>[],terminals:()=>[],theme:()=>({}),watchFolder:()=>Object.assign(new Promise(()=>{}),{cancel(){}}),
+    window:()=>null,writeTextFile:async()=>null
+  };
+  const cx={timer:{every(){},after(){}},notify(){},spawn(){},focus_handle:()=>({focus(){}})};
+  for(const mod of ["orca-projects","orca-changes","orca-files","orca-inspector","orca-tabs","orca-add-project","orca-agent-actions"]){
+    const Mod=await filesModel(mod,nullHerdr);
+    const view=new Mod();
+    view.init(null,cx);
+    assert.ok(view.render(cx),mod+" rendered cleanly when window() returned null");
+  }
+});
+
+test("Files marks match Windows backslash paths and watchFolder handles cancel cleanly",async()=>{
+  const root=await temp("files-marks"),repo=path.join(root,"repo");
+  await mkdir(repo);
+  await git(repo,"init","-q","-b","main");
+  await git(repo,"config","user.name","Fixture");
+  await git(repo,"config","user.email","fixture@example.test");
+  await writeFile(path.join(repo,"tracked.txt"),"one\n");
+  await git(repo,"add","tracked.txt");
+  await git(repo,"commit","-qm","init");
+  await writeFile(path.join(repo,"tracked.txt"),"two\n");
+  await writeFile(path.join(repo,"untracked.txt"),"fresh\n");
+
+  const cancelled=[];
+  const pendingOps=[];
+  const herdr={
+    spaces:()=>[{active:true,id:"s1",folder:repo,machine:null}],
+    focused:()=>null,panes:()=>[],home:()=>root,settings:()=>({}),theme:()=>({}),
+    window:()=>({platform:"windows"}),
+    exec:(cmd,args,opts)=>commandResult(cmd,args,{cwd:opts?.cwd}),
+    readTextFile:f=>readFile(f,"utf8"),
+    watchFolder:dir=>{
+      const p=new Promise(()=>{});
+      p.cancel=()=>cancelled.push(dir);
+      return p;
+    }
+  };
+  const cx={notify(){},timer:{every(){}},spawn:fn=>{const p=fn(cx);pendingOps.push(p);return p;}};
+  const Files=await filesModel("orca-files",herdr),browser=new Files();
+  browser.init(null,cx);
+  await Promise.all(pendingOps);
+  const trackedKey=Object.keys(browser.marks).find(k=>k.endsWith("/tracked.txt"));
+  const untrackedKey=Object.keys(browser.marks).find(k=>k.endsWith("/untracked.txt"));
+  assert.equal(browser.marks[trackedKey],"M");
+  assert.equal(browser.marks[untrackedKey],"A");
+  const rendered=flatten(browser.render(cx)).filter(n=>typeof n==="string");
+  assert.ok(rendered.includes("M")&&rendered.includes("A"));
+  await browser.close();
+  assert.equal(cancelled.length,1);
+});
+
+test("Changes opens inline diff preview, returns on closePreview, and cancels watchFolder on close",async()=>{
+  const root=await temp("changes-diff"),repo=path.join(root,"repo");
+  await mkdir(repo);
+  await git(repo,"init","-q","-b","main");
+  await git(repo,"config","user.name","Fixture");
+  await git(repo,"config","user.email","fixture@example.test");
+  await writeFile(path.join(repo,"app.js"),"console.log(1);\n");
+  await git(repo,"add","app.js");
+  await git(repo,"commit","-qm","init");
+  await writeFile(path.join(repo,"app.js"),"console.log(2);\n");
+
+  const cancelled=[];
+  const openedEditors=[];
+  const herdr={
+    spaces:()=>[{active:true,folder:repo,machine:null}],
+    panes:()=>[],focused:()=>null,window:()=>({platform:"windows"}),
+    theme:()=>({}),settings:()=>({}),shared:()=>null,
+    exec:(cmd,args,opts)=>commandResult(cmd,args,{cwd:opts?.cwd}),
+    readTextFile:f=>readFile(f,"utf8"),
+    watchFolder:dir=>{
+      const p=new Promise(()=>{});
+      p.cancel=()=>cancelled.push(dir);
+      return p;
+    }
+  };
+  let lastSpawn;
+  const cx={notify(){},timer:{every(){}},spawn:fn=>{lastSpawn=fn(cx);return lastSpawn;}};
+  const Changes=await filesModel("orca-changes",herdr,{EditorState:{new:opts=>{openedEditors.push(opts);return{release(){}};}}});
+  const panel=new Changes();
+  panel.init(null,cx);
+  await lastSpawn;
+  const file=panel.files.find(f=>f.path==="app.js"&&f.section==="Uncommitted");
+  assert.ok(file);
+  panel.openFile(file,cx);
+  await lastSpawn;
+  assert.equal(openedEditors.length,1);
+  assert.equal(openedEditors[0].language,"diff");
+  assert.match(openedEditors[0].value,/\+console\.log\(2\);/);
+  const previewText=flatten(panel.render(cx)).filter(n=>typeof n==="string");
+  assert.ok(previewText.includes("app.js")&&previewText.includes("Uncommitted"));
+  panel.closePreview(cx);
+  assert.equal(panel.preview,null);
+  await panel.close();
+  assert.equal(cancelled.length,1);
+});
+
+test("Repository URL parser strips git clone prefix and rejects credentials and invalid paths",()=>{
+  assert.deepEqual(repository("git clone https://github.com/owner/repo.git"),{url:"https://github.com/owner/repo.git",name:"repo"});
+  assert.deepEqual(repository("git@github.com:owner/my-app.git/"),{url:"git@github.com:owner/my-app.git",name:"my-app"});
+  assert.throws(()=>repository("https://user@github.com/owner/repo.git"),/without embedded credentials/);
+  assert.throws(()=>repository("https://user:pass@github.com/owner/repo.git"),/host and port/);
+  assert.throws(()=>repository("https://github.com/owner/con.git"),/folder/);
+  assert.throws(()=>repository("not a url"),/HTTPS or SSH/);
+});
+
+test("Usage renders cleanly when provider CLIs are unavailable",async()=>{
+  let sharedMap={};
+  const herdr={
+    appHome:()=>home,checking:()=>false,closeOverlay(){},
+    exec:async()=>({code:1,stdout:"",stderr:"not installed"}),
+    home:()=>home,nextCommand:()=>new Promise(()=>{}),openOverlay(){},
+    props:()=>({}),readTextFile:async()=>null,run(){},
+    shared:k=>sharedMap[k],setShared:(k,v)=>{sharedMap[k]=v;},
+    theme:()=>({}),window:()=>({platform:"windows"}),writeTextFile:async()=>null
+  };
+  const { snapshot } = await modImport("orca-usage", "account.js", herdr);
+  const snap=await snapshot();
+  assert.deepEqual(snap.groups,[]);
+  assert.equal(snap.codex.available,false);
+  assert.equal(snap.google.available,false);
+  sharedMap["orca.account.summary"]=snap;
+  const Usage=await filesModel("orca-usage",herdr),bar=new Usage();
+  let refreshed;
+  const refreshDone = new Promise(resolve => { refreshed = resolve; });
+  const cx={timer:{every(){},after(){}},notify(){if (!bar.busy) refreshed();},spawn:fn=>fn(cx)};
+  bar.init(null,cx);
+  await refreshDone;
+  const labels=flatten(bar.render(cx)).filter(n=>typeof n==="string");
+  assert.ok(labels.includes("No provider CLIs signed in"));
+  assert.ok(labels.includes("Usage"));
 });

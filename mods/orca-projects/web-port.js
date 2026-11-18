@@ -10,7 +10,7 @@ export function browserHost(p) {
   throw Error("This listener has no local IP address.");
 }
 
-export async function webAddress(port, runCurl, present) {
+export async function webAddress(port, runCurl, present, nullOutput = "NUL") {
   const host = browserHost(port);
   if (!present()) throw Error("This listener has closed.");
   let plainBadRequest = null;
@@ -18,7 +18,7 @@ export async function webAddress(port, runCurl, present) {
     const url = protocol + "://" + host + ":" + port.port + "/";
     // HEAD tests the protocol on the chosen socket. The browser handles redirects and certificate trust.
     const args = ["--disable","--noproxy","*","--silent","--head","--insecure","--connect-timeout","1","--max-time","2",
-      "--output","NUL","--write-out","%{http_code}","--url",url];
+      "--output",nullOutput,"--write-out","%{http_code}","--url",url];
     const r = await runCurl(args);
     if (r.code === 0 && /^[1-5]\d\d$/.test(r.stdout.trim())) {
       if (!present()) throw Error("This listener has closed.");

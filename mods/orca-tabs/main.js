@@ -31,7 +31,7 @@ export default class Tabs extends View {
   init() {
     this.pressed = null;
     this.scroll = ScrollHandle.new();
-    try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
+    try { this.panels = typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("panels") ?? "{}") : {}; } catch { this.panels = {}; }
     if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
     this.swipe = { acc: 0, steps: 0, at: 0, last: 0 };
   }
@@ -84,7 +84,7 @@ export default class Tabs extends View {
     }
     if (this.panels[space.id] === now) return;
     this.panels[space.id] = now;
-    localStorage.setItem("panels", JSON.stringify(this.panels));
+    try { if (typeof localStorage !== "undefined") localStorage.setItem("panels", JSON.stringify(this.panels)); } catch {}
   }
 
   render() {
@@ -118,10 +118,12 @@ export default class Tabs extends View {
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
-        .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
+        .child(div().max_w(170).truncate().child(name))
+        .when(c.zoomed, el => el.child(div().px(4).py(1).rounded(3).bg(t.selected).text_size(9.5).font_semibold().text_color(t.accent).tooltip("Zoomed pane").child("Z")))
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
+        .when(c.active, el => el.child(div().id(`close-${c.id}`).p(2).rounded(4).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(11))));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
@@ -137,15 +139,16 @@ export default class Tabs extends View {
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
         .children(shown.map(item)))
-      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .child(button("tab-new", svg("mods/workspace-chrome/plus.svg").size(14), () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })).tooltip("New tab or agent"))
       .when(enabled.length > 0 && Boolean(panel), el => el.child(h_flex().id("toggle-inspector").h(26).px(8).gap(5).rounded(6).items_center()
         .bg(panel.hidden ? t.chrome : t.selected).text_color(t.foreground).text_size(12).cursor_pointer().hover(s => s.bg(t.hover))
+        .tooltip(panel.hidden ? "Show Files & Changes inspector" : "Hide inspector")
         .on_mouse_down("left", stop).on_click(() => {
           if (panel.hidden && !enabled.includes(body?.active)) run("layout.select", { stack: "panel-body", child: enabled[0] });
           run(panel.hidden ? "layout.show" : "layout.hide", { id: "panel" });
         }).child(svg("mods/workspace-chrome/panel-right.svg").size(14)).child(panel.hidden ? "Show inspector" : "Hide inspector")))
-      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/orca-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
-        .child(button("maximize", w.platform === "windows" ? svg(`mods/orca-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
-        .child(button("close-window", w.platform === "windows" ? svg("mods/orca-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
+      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/orca-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")).tooltip("Minimize"))
+        .child(button("maximize", w.platform === "windows" ? svg(`mods/orca-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")).tooltip(w.maximized ? "Restore" : "Maximize"))
+        .child(button("close-window", w.platform === "windows" ? svg("mods/orca-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close")).tooltip("Close")));
   }
 }

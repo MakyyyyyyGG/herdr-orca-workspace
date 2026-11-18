@@ -5,13 +5,24 @@ import { normalize, basename, key, parseWorktrees, locations, groupProjects } fr
 
 import { webAddress } from "./web-port.js";
 import { exitedAgent, endpoints, portLabel, portHint } from "./activity.js";
+import { createHost } from "./host.js";
 
+const host = createHost({ exec, window });
 const asset = (name, size) => svg("mods/workspace-chrome/" + name + ".svg").size(size).flex_none();
 const statusLabel = { working: "Working", idle: "Idle", done: "Done", blocked: "Needs you", error: "Needs you" };
+const RANK = { blocked: 4, error: 4, done: 3, working: 2, idle: 1 };
 const runtime = "orca.runtime.local";
 const portKey = p => JSON.stringify([p.bind,p.port,p.pid]);
 const itemsNow = () => locations(spaces(), panes(), agents(), terminals(), shared(runtime) || {});
-const menu = space => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: space.id } } });
+const menu = space => space && openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: space.id } } });
+const findNode = (node, id) => {
+  if (node?.id === id) return node;
+  for (const child of node?.children || []) { const hit = findNode(child, id); if (hit) return hit; }
+  return null;
+};
+// Listener sampling starts a PowerShell process: keep it gentle, and slower still
+// while the window is in the background.
+const SAMPLE_ACTIVE = 5000, SAMPLE_IDLE = 30000;
 
 export default class Projects extends View {
   init(_, cx) {
@@ -20,13 +31,21 @@ export default class Projects extends View {
       this.protocols = new Map();
       if (!checking()) cx.timer.every(10000, ctx => this.inspectPorts(ctx));
     }
-    this.folded = new Set();
+    try {
+      const saved = typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("projects.folded") || "[]") : [];
+      this.folded = new Set(Array.isArray(saved) ? saved : []);
+    } catch { this.folded = new Set(); }
     if (props()?.checkout) this.pick = { path: normalize(props().checkout), space: { machine: props().machine || null } };
     if (!checking() && !props()?.portProject) {
-      if (!this.pick && window().platform === "windows") {
+      if (!this.pick) {
+        // window() can still be null while the app starts: decide per sample, not here.
         this.roots = new Map();
+        this.sampledAt = 0;
         this.sample(cx);
-        cx.timer.every(4000, ctx => this.sample(ctx));
+        cx.timer.every(SAMPLE_ACTIVE, ctx => {
+          if (window()?.active === false && Date.now() - this.sampledAt < SAMPLE_IDLE) return;
+          this.sample(ctx);
+        });
       }
       this.scan(cx);
       cx.timer.every(2500, ctx => this.scan(ctx));
@@ -34,8 +53,9 @@ export default class Projects extends View {
   }
 
   sample(cx) {
-    if (this.sampling) return;
+    if (this.sampling || !host.isWindows()) return;
     this.sampling = true;
+    this.sampledAt = Date.now();
     cx.spawn(async ctx => {
       try {
         const all = terminals(), ps = panes(), ag = agents();
@@ -74,7 +94,9 @@ export default class Projects extends View {
   scan(cx) {
     if (this.looking) return;
     const paths = new Map();
-    for (const item of [...itemsNow(), ...(this.pick ? [this.pick] : [])]) if (item.path) paths.set(key(item.space.machine, item.path), item);
+    let items;
+    try { items = itemsNow(); } catch { return; } // The next scan retries when the host snapshot is ready.
+    for (const item of [...items, ...(this.pick ? [this.pick] : [])]) if (item.path) paths.set(key(item.space.machine, item.path), item);
     for (const id of this.repos.keys()) if (!paths.has(id)) this.repos.delete(id);
     const todo = [...paths].filter(([id, item]) => {
       const old = this.repos.get(id);
@@ -87,10 +109,9 @@ export default class Projects extends View {
         const lists = new Map();
         for (const [id, item] of todo) {
           const on = item.space.machine;
-          const git = !on && window().platform === "windows" ? "C:/Program Files/Git/cmd/git.exe" : "git";
           let info = this.repos.get(id);
           try {
-            const read = args => exec(git, ["-C", item.path, ...args], { on, timeout: 4500 });
+            const read = args => host.git(["-C", item.path, ...args], { on, timeout: 4500 });
             const r = await read(["rev-parse", "--show-toplevel"]);
             if (r.code === 0) {
               const top = normalize(r.stdout.trimEnd());
@@ -119,7 +140,7 @@ export default class Projects extends View {
     const generic = !title || title === a.address || /^(?:[a-z]:[\\/]|\/|~[\\/])/i.test(title);
     const name = generic ? [program.name, a.address].filter(Boolean).join(" · ") : title;
     const record = this.core.get(a.address), stamp = record?.labels?.["orca.sleep"];
-    const sleeping = Boolean(stamp && state !== "working" && (record?.turn == null || stamp.split("/")[1] === String(record.turn)));
+    const sleeping = Boolean(typeof stamp === "string" && stamp && state !== "working" && (record?.turn == null || stamp.split("/")[1] === String(record.turn)));
     const actions = () => openOverlay({ mod: "orca-agent-actions", kind: "dialog", width: 365,
       props: { target: { address: a.address, name, pane: a.pane, created: record?.created_ms } } });
     const selected = focused()?.terminal === a.address || focused()?.shown === a.address;
@@ -132,7 +153,8 @@ export default class Projects extends View {
         .when(state === "working" && shared("orca.account.summary")?.motion !== false, dot => dot.loop("opacity", { from: 0.35, to: 1, period: 1500 })))
       .when(Boolean(program.icon), el => el.child(program.tint ? svg(program.icon).size(13).flex_none().text_color(t.foreground) : image(program.icon).size(13).flex_none()))
       .child(div().flex_1().min_w(0).truncate().text_size(11.8).text_color(t.foreground).child(name))
-      .child(div().text_size(10).text_color(t.muted).child(sleeping ? "Sleeping" : statusLabel[state] || "Live"))
+      .child(div().text_size(10).text_color(sleeping ? t.dim : state === "blocked" ? t.blocked : state === "done" ? t.done : state === "working" ? t.working : t.muted)
+        .child(sleeping ? "Sleeping" : statusLabel[state] || "Live"))
       .child(div().id("more-" + a.address).px(4).rounded(4).text_size(13).text_color(t.muted).tooltip("Agent actions")
         .hover(el => el.bg(t.raised)).on_click((_,ctx) => { ctx.stop_propagation(); actions(); }).child("⋯"));
   }
@@ -142,9 +164,13 @@ export default class Projects extends View {
     const trees = [...group.checkouts.values()];
     const entries = trees.flatMap(c => [...c.entries.values()]);
     const ports = endpoints(entries.flatMap(e => e.items));
+    const groupAgents = entries.flatMap(e => e.items.filter(i => i.agent).map(i => i.agent));
+    const topAgentStatus = groupAgents.reduce((best, a) => (RANK[a.status] || 0) > (RANK[best] || 0) ? a.status : best, null);
+    const urgentState = topAgentStatus === "error" ? "blocked" : topAgentStatus;
     const selectedEntry = entries.find(e => e.items.some(i => (i.pane && i.pane === here?.pane) || (i.agent && i.agent.address === here?.shown)));
     const primary = selectedEntry || entries.find(e => e.space.active) || entries[0];
     const go = entry => {
+      if (!entry) return;
       const item = entry.items.find(i => i.pane === here?.pane) || entry.items.find(i => i.pane) || entry.items[0];
       if (item.pane) run("pane.focus", { pane: item.pane });
       else if (item.agent) run("terminal.peek", { terminal: item.agent.address });
@@ -152,16 +178,23 @@ export default class Projects extends View {
     };
     const folder = !group.machine && key(null, group.root) === key(null, normalize(home())) ? "Home" : basename(group.root);
     const folded = this.folded.has(group.id);
+    const compactTip = [folder, trees[0]?.branch, groupAgents.length ? `${groupAgents.length} ${groupAgents.length === 1 ? "agent" : "agents"}` : null].filter(Boolean).join(" · ");
     const head = h_flex().id("folder-" + group.id).px(compact ? 2 : 6).h(30).gap(6).items_center().rounded(6)
-      .hover(el => el.bg(t.hover)).cursor_pointer().tooltip(group.root || folder)
-      .on_click(() => go(primary)).on_mouse_down("right", () => menu(primary.space))
-      .child(asset("folder", 15).text_color("#eac490")).when(!compact, el => el
+      .when(compact, el => el.relative().justify_center().tooltip(compactTip))
+      .when(!compact, el => el.tooltip(group.root || folder))
+      .hover(el => el.bg(t.hover)).cursor_pointer()
+      .on_click(() => go(primary)).on_mouse_down("right", () => menu(primary?.space))
+      .child(asset("folder", 15).text_color("#eac490"))
+      .when(compact && Boolean(urgentState), el => el.child(div().size(6).rounded(3).absolute().top(4).right(4).bg(t[urgentState] || t.dim)))
+      .when(!compact, el => el
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(13).text_color(t.foreground).child(folder))
+        .when(folded && Boolean(urgentState), el => el.child(div().size(6).rounded(3).flex_none().bg(t[urgentState] || t.dim)))
         .when(ports.length > 0, row => row.child(div().id("ports-" + group.id).px(5).py(2).rounded(4).bg(t.canvas).text_size(10.5).text_color(t.accent)
-          .tooltip(portHint(ports)).on_click((_, ctx) => { ctx.stop_propagation(); openOverlay({ mod: "orca-projects", kind:"dialog", width:400, props:{ portProject: group.id, addresses: entries.flatMap(e => e.items.map(i => i.terminal).filter(Boolean)) } }); }).child(portLabel(ports))))
-        .child(div().id("fold-" + group.id).p(4).on_click((_, ctx) => {
+          .hover(el => el.bg(t.selected)).tooltip(portHint(ports)).on_click((_, ctx) => { ctx.stop_propagation(); openOverlay({ mod: "orca-projects", kind:"dialog", width:400, props:{ portProject: group.id, addresses: entries.flatMap(e => e.items.map(i => i.terminal).filter(Boolean)) } }); }).child(portLabel(ports))))
+        .child(div().id("fold-" + group.id).p(4).rounded(4).hover(el => el.bg(t.raised)).on_click((_, ctx) => {
           ctx.stop_propagation();
           if (folded) this.folded.delete(group.id); else this.folded.add(group.id);
+          try { if (typeof localStorage !== "undefined") localStorage.setItem("projects.folded", JSON.stringify([...this.folded])); } catch {}
           ctx.notify();
         }).child(asset(folded ? "chevron-right" : "chevron-down", 11).text_color(t.muted))));
     const card = v_flex().flex_none().px(compact ? 2 : 5).py(3).mb(4).rounded(7)
@@ -169,11 +202,12 @@ export default class Projects extends View {
     if (compact) return card;
     const rows = [];
     let height = 0;
-    const label = (id, text, icon, hint, action, space, suffix) => {
+    const label = (id, text, icon, hint, action, space, suffix, active) => {
       rows.push(h_flex().id(id).ml(7).px(5).h(23).flex_none().gap(5).items_center().rounded(4)
+        .when(Boolean(active), el => el.bg(t.surface))
         .tooltip(hint).cursor_pointer().hover(el => el.bg(t.hover)).on_click(action)
         .when(Boolean(space), el => el.on_mouse_down("right", () => menu(space)))
-        .child(asset(icon, 12).text_color(t.muted))
+        .child(asset(icon, 12).text_color(active ? t.accent : t.muted))
         .child(div().flex_1().min_w(0).truncate().text_size(11.6).text_color(t.foreground).child(text))
         .when(Boolean(suffix), el => el.child(div().text_size(10).text_color(t.dim).child(suffix))));
       height += 23;
@@ -188,11 +222,11 @@ export default class Projects extends View {
         label("checkout-" + checkoutId, text, "branch", checkout.path, () => {
           if (top) go(top);
           else run("space.new", { folder: checkout.path, machine: group.machine || "" });
-        }, top?.space, linked ? (basename(checkout.path) === text ? "worktree" : basename(checkout.path) + " · worktree") : "");
+        }, top?.space, linked ? (basename(checkout.path) === text ? "worktree" : basename(checkout.path) + " · worktree") : "", occupants.length === 1 && occupants[0] === selectedEntry && trees.length > 1);
       }
       for (const entry of occupants) {
         const s = entry.space;
-        if (s.named || occupants.length > 1) label("space-" + s.id + checkoutId, s.named ? s.name : "Space " + s.index, "layers", checkout.path, () => go(entry), s);
+        if (s.named || occupants.length > 1) label("space-" + s.id + checkoutId, s.named ? s.name : "Space " + s.index, "layers", checkout.path, () => go(entry), s, "", entry === selectedEntry && occupants.length > 1);
         const members = entry.items.filter(i => i.agent);
         const local = new Set(members.map(i => i.agent.address));
         const drawn = new Set();
@@ -230,12 +264,14 @@ export default class Projects extends View {
     for (const p of due) this.protocols.delete(portKey(p));
     cx.spawn(async ctx => {
       try {
+        const curlBin = host.isWindows() ? "curl.exe" : "curl";
+        const nullOut = host.isWindows() ? "NUL" : "/dev/null";
         let i = 0;
         const probe = async () => {
           while (i < due.length) {
             const p = due[i++], k = portKey(p);
             const present = () => this.currentPorts().some(v => portKey(v) === k);
-            const url = await webAddress(p, args => exec("curl.exe",args,{timeout:3500}), present).catch(() => null);
+            const url = await webAddress(p, args => exec(curlBin,args,{timeout:3500}), present, nullOut).catch(() => null);
             if (present()) this.protocols.set(k,{url,at:Date.now()});
             ctx.notify();
           }
@@ -252,9 +288,11 @@ export default class Projects extends View {
       const activity = shared(runtime) || {};
       return (props().addresses || []).some(a => activity[a]?.ports?.some(p => p.port === port.port && p.pid === port.pid && p.bind === port.bind));
     };
+    const curlBin = host.isWindows() ? "curl.exe" : "curl";
+    const nullOut = host.isWindows() ? "NUL" : "/dev/null";
     cx.spawn(async ctx => {
       try {
-        const url = await webAddress(port,args => exec("curl.exe",args,{timeout:3500}),present);
+        const url = await webAddress(port,args => exec(curlBin,args,{timeout:3500}),present,nullOut);
         ctx.open_url(url);
       } catch (e) { this.protocols.set(portKey(port),{url:null,at:Date.now()}); this.webError = e.message || String(e); }
       finally { this.webBusy = null; ctx.notify(); }
@@ -266,6 +304,8 @@ export default class Projects extends View {
     const info = this.repos.get(id);
     const group = tree.find(g => g.id === key(on, info?.main || path) || g.checkouts.has(id));
     const trees = info?.trees?.filter(c => !c.bare && !c.prunable) || [];
+    const entriesAll = group ? [...group.checkouts.values()].flatMap(c => [...c.entries.values()]) : [];
+    const activeSpace = entriesAll.find(e => e.space.active)?.space || entriesAll[0]?.space;
     const choose = (c, i) => {
       closeOverlay(props().overlay);
       if (i?.pane) run("pane.focus", { pane: i.pane });
@@ -275,7 +315,7 @@ export default class Projects extends View {
     };
     return v_flex().w_full().p(16).gap(8).bg(t.popover).text_color(t.foreground)
       .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(16).child("Switch checkout"))
-        .child(div().id("dismiss-picker").p(4).cursor_pointer().on_click(() => closeOverlay(props().overlay)).child(asset("x", 14))))
+        .child(div().id("dismiss-picker").p(4).rounded(4).cursor_pointer().hover(el => el.bg(t.hover)).on_click(() => closeOverlay(props().overlay)).child(asset("x", 14))))
       .child(v_flex().id("checkout-list").max_h(380).overflow_y_scrollbar().children(trees.map(c => {
         const entries = [...(group?.checkouts.get(key(on, c.path))?.entries.values() || [])];
         const items = entries.flatMap(e => e.items), members = items.filter(i => i.agent);
@@ -289,27 +329,53 @@ export default class Projects extends View {
             .child(div().size(6).rounded(3).bg(t[i.agent.status] || t.dim))
             .child(div().min_w(0).flex_1().truncate().text_size(12).child((i.agent.program?.name || "Agent") + " · " + i.agent.address))
             .child(div().text_size(10).text_color(t.muted).child(statusLabel[i.agent.status] || "Live"))));
-      })).when(!trees.length, el => el.child(div().p(8).text_color(t.muted).child(info ? "No available checkouts" : "Reading worktrees…"))));
+      })).when(!trees.length, el => el.child(div().p(8).text_color(t.muted).child(info ? "No available checkouts" : "Reading worktrees…"))))
+      .when(Boolean(info?.main || path), el => el.child(h_flex().pt(8).border_t(1).border_color(t.border).justify_end()
+        .child(h_flex().id("new-worktree").h(28).px(10).gap(6).rounded(6).items_center().bg(t.raised).text_size(11.5).text_color(t.foreground)
+          .cursor_pointer().hover(el => el.bg(t.hover)).on_click(() => {
+            closeOverlay(props().overlay);
+            openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: {
+              ...(activeSpace ? { space: activeSpace.id } : { folder: info?.main || path, machine: on || null }),
+              action: "new"
+            } });
+          }).child(asset("git-branch", 12).text_color(t.accent)).child("New worktree…"))));
   }
 
   render(cx) {
     const t = theme();
+    try {
+      return this.renderProjects(cx, t);
+    } catch (error) {
+      return v_flex().p(10).gap(6).bg(t.chrome)
+        .child(div().text_size(12).font_medium().text_color(t.foreground).child("Couldn’t load project details"))
+        .child(div().text_size(11).text_color(t.muted).child(String(error?.message || error)))
+        .child(div().id("retry-projects").p(5).rounded(4).cursor_pointer().text_color(t.accent)
+          .hover(el => el.bg(t.hover)).on_click((_, ctx) => ctx.notify()).child("Retry"));
+    }
+  }
+
+  renderProjects(cx, t) {
     this.core = new Map(terminals().map(term => [term.address, term]));
-    const tree = groupProjects(itemsNow(), this.repos);
     if (props()?.portProject) {
       this.inspectPorts(cx);
       const rows = this.currentPorts();
       return v_flex().w_full().p(15).gap(8).bg(t.popover).text_color(t.foreground)
-        .child(h_flex().items_center().child(div().flex_1().font_semibold().child("Listening ports")).child(div().id("dismiss").p(4).cursor_pointer().on_click(() => closeOverlay(props().overlay)).child(asset("x",14))))
-        .child(v_flex().id("port-list").max_h(300).overflow_y_scrollbar().children(rows.map(p => h_flex().gap(8).h(27).items_center()
-          .child(div().text_size(12).text_color(t.accent).child(p.bind + ":" + p.port)).child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(p.process + " · PID " + p.pid))
-          .when(Boolean(this.protocols.get(portKey(p))?.url), row => row.child(div().id("browse-"+p.bind+p.port+p.pid).px(6).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.accent).cursor_pointer()
-            .on_click((_, ctx) => this.browse(p,ctx)).child(this.webBusy?.pid === p.pid && this.webBusy?.port === p.port ? "Checking…" : "Open in browser ↗")))))
+        .child(h_flex().items_center().child(div().flex_1().font_semibold().child("Listening ports")).child(div().id("dismiss").p(4).rounded(4).cursor_pointer().hover(el => el.bg(t.hover)).on_click(() => closeOverlay(props().overlay)).child(asset("x",14))))
+        .child(v_flex().id("port-list").max_h(300).overflow_y_scrollbar().children(rows.map(p => {
+          const probe = this.protocols.get(portKey(p));
+          return h_flex().gap(8).h(27).items_center()
+            .child(div().text_size(12).text_color(t.accent).child(p.bind + ":" + p.port))
+            .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(p.process + " · PID " + p.pid))
+            .when(!probe && this.probing, row => row.child(div().text_size(10.5).text_color(t.dim).child("Checking…")))
+            .when(Boolean(probe?.url), row => row.child(div().id("browse-"+p.bind+p.port+p.pid).px(6).py(3).rounded(5).bg(t.raised).text_size(11).text_color(t.accent).cursor_pointer()
+              .hover(el => el.bg(t.hover)).tooltip(probe.url).on_click((_, ctx) => this.browse(p,ctx)).child(this.webBusy?.pid === p.pid && this.webBusy?.port === p.port ? "Opening…" : "Open in browser ↗")));
+        }))
           .when(!rows.length,el => el.child("No listening ports")))
         .when(Boolean(this.webError), el => el.child(div().text_size(11.5).text_color(t.blocked).child(this.webError)));
     }
+    const tree = groupProjects(itemsNow(), this.repos);
     if (this.pick) return this.picker(t, tree);
-    const sidebar = layout()?.children?.flatMap(n => [n, ...(n.children || [])]).find(n => n.id === "sidebar");
+    const sidebar = findNode(layout(), "sidebar");
     const compact = (sidebar?.size?.px || 280) < 160;
     const sections = [], order = [];
     for (const machine of [...new Set(tree.map(g => g.machine))]) {
@@ -321,15 +387,17 @@ export default class Projects extends View {
       sections.push(...mine.map(g => this.section(g, t, compact, order)));
     }
     setAgentOrder(order);
+    const empty = !compact && !tree.length ? v_flex().id("projects-empty").mx(4).mt(8).p(14).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(8).items_center().child(asset("folder", 15).text_color(t.accent))
+        .child(div().text_size(12.5).font_medium().text_color(t.foreground).child("No projects open")))
+      .child(div().text_size(11.5).text_color(t.muted).child("Choose Add project to open a folder or clone a repository.")) : null;
     return v_flex().size_full().min_h(0).bg(t.chrome)
       .child(h_flex().h(32).px(compact ? 4 : 12).items_center().justify_between()
         .when(!compact, el => el.child(div().text_size(11.5).font_medium().text_color(t.muted).child("Projects")))
         .when(!compact, el => el.child(div().flex_1()))
-        .when(!compact && Boolean(shared("orca.closed-agents")?.length), el => el.child(div().id("closed-agents").p(4).cursor_pointer().tooltip("Closed agents")
-          .on_click(() => openOverlay({ mod: "orca-agent-actions", kind: "dialog", width: 365 })).child(asset("archive",14).text_color(t.muted))))
-        .child(div().id("open-project").p(4).rounded(4).tooltip("Add project from URL or folder").cursor_pointer().hover(el => el.bg(t.hover))
-          .on_click(() => run("mod.open", { name: "orca-add-project" })).child(asset("folder-plus", 15).text_color(t.muted))))
-      .child(v_flex().id("project-list").flex_1().min_h(0).px(compact ? 2 : 8).overflow_y_scrollbar().children(sections));
+        .when(!compact && Boolean(shared("orca.closed-agents")?.length), el => el.child(div().id("closed-agents").p(4).rounded(4).cursor_pointer().hover(el => el.bg(t.hover)).tooltip("Closed agents")
+          .on_click(() => openOverlay({ mod: "orca-agent-actions", kind: "dialog", width: 365 })).child(asset("archive",14).text_color(t.muted)))))
+      .child(v_flex().id("project-list").flex_1().min_h(0).px(compact ? 2 : 8).overflow_y_scrollbar().children(sections).when(Boolean(empty), el => el.child(empty)));
   }
 }
 

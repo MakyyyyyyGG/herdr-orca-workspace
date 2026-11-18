@@ -18,7 +18,8 @@ foreach ($line in @($net) + @($net6)) {
     if ($line -notmatch '^\s*TCP\s+(.+):([0-9]+)\s+\S+\s+LISTENING\s+([0-9]+)\s*$') { continue }
     $bind = $Matches[1]; $port = [int]$Matches[2]; $owner = [int]$Matches[3]
     if (!$ports.ContainsKey($owner)) { $ports[$owner] = [Collections.Generic.List[object]]::new() }
-    $ports[$owner].Add(@{ bind=$bind; port=$port; pid=$owner; process=$procs[$owner].Name })
+    $procName = if ($procs.ContainsKey($owner)) { $procs[$owner].Name } else { "pid $owner" }
+    $ports[$owner].Add(@{ bind=$bind; port=$port; pid=$owner; process=$procName })
 }
 $rows = foreach ($root in $roots) {
     if (!$procs.ContainsKey($root)) { continue }

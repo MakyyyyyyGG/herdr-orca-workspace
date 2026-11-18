@@ -30,6 +30,12 @@
               "window_drag": true
             },
             {
+              "id": "project-actions",
+              "type": "block",
+              "size": { "px": 42 },
+              "content": { "mod": "orca-project-actions" }
+            },
+            {
               "id": "projects",
               "type": "block",
               "min": 60,

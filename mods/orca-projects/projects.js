@@ -1,4 +1,9 @@
-export const normalize = path => (path || "").replace(/\\/g, "/").replace(/\/+$/, "") || (path ? "/" : "");
+export function normalize(path) {
+  if (typeof path !== "string" || !path) return "";
+  const slashes = path.replace(/\\/g, "/");
+  if (/^[a-z]:\/+$/i.test(slashes)) return slashes.slice(0, 3);
+  return slashes.replace(/\/+$/, "") || "/";
+}
 export const basename = path => normalize(path).split("/").pop() || path || "Home";
 export const key = (machine, path) => JSON.stringify([machine ?? null, /^[a-z]:|^\/\//i.test(path) ? path.toLowerCase() : path]);
 
@@ -19,7 +24,7 @@ export function parseWorktrees(output) {
 export function locations(spaces, panes, agents, terminals, activity = {}) {
   const live = new Map(terminals.filter(t => t.state === "live").map(t => [t.address, t]));
   const byPane = new Map(panes.map(p => [p.pane, p]));
-  const byTab = new Map(spaces.flatMap(s => s.tabs.map(t => [t.id, s])));
+  const byTab = new Map(spaces.flatMap(s => (s.tabs || []).map(t => [t.id, s])));
   const items = [];
   const owners = new Map();
   const listed = new Map(agents.map(a => [a.address, a]));
